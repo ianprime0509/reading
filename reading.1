@@ -1,0 +1,39 @@
+.Dd May 30, 2018
+.Dt READING 1
+.Os
+.Sh NAME
+.Nm reading
+.Nd a simple utility for managing reading plans
+.Sh SYNOPSIS
+.Nm
+.Op Fl dnpV
+.Op Fl a Ar file
+.Op Fl s Ar num
+.Op Fl t Ar entry
+.Op Ar plan
+.Sh DESCRIPTION
+The arguments are mutually exclusive, functioning more like subcommands in this
+respect than traditional Unix-style arguments.
+They are as follows:
+.Bl -tag -width Ds
+.It Fl a Ar file
+Add the given file as a new reading plan.
+The
+.Ar plan
+argument, if provided, will be the name of the new plan; if not provided, the
+name of the file will be used.
+.It Fl d
+Delete the given plan.
+.It Fl n
+Advance the given plan to the next entry.
+.It Fl p
+Revert the given plan to the previous entry.
+.It Fl s Ar num
+Show the next
+.Ar num
+entries of the given plan (or of all plans, if none is specified).
+.It Fl t Ar entry
+Set the current entry of the given plan.
+.It Fl V
+Show version information and exit.
+.El
