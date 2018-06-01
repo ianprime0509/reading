@@ -14,23 +14,28 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <ctype.h>
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /** The permissions to use when creating the plan directory. */
 #define PLAN_DIR_PERMS 0755
-/** The permissions to use when creating a plan file. */
-#define PLAN_FILE_PERMS 0644
 /** The program's version string. */
 #define VERSION "0.1.0"
+
+/** Clamp the middle value to lie within the range specified by low and high. */
+#define clamp(low, val, high) ((val) < (low) ? (low) : \
+                               (val) > (high) ? (high) : (val))
 
 static char *progname = "reading";
 
@@ -52,10 +57,37 @@ static void show(const char *plan, int num);
 /** Show a summary for the given plan (all plans if plan is NULL). */
 static void summary(const char *plan);
 
+/** INTERNAL PLAN FUNCTIONS */
+/**
+ * Return the number of entries in the given plan.  The program will exit if
+ * this cannot be done (e.g. if the plan does not exist).
+ */
+static int plan_count_entries(const char *plan);
+/**
+ * Given an already-opened plan file, consume characters until the beginning of
+ * the next entry.  If there are no more entries, a non-zero value is returned;
+ * otherwise, zero is returned.  The next character to be read after a call to
+ * this function will be the first character in the entry's title.
+ */
+static int plan_file_next_entry(FILE *planfile);
+/**
+ * Return the current entry of the given plan.  The program will abort if this
+ * cannot be done (e.g. if the plan does not exist).
+ */
+static int plan_get_entry(const char *plan);
+/**
+ * Set the current entry of the given plan.  Unlike the set subcommand, this
+ * function does not check to make sure that the entry stays within the bounds
+ * of the plan's available entries.
+ */
+static void plan_set_entry(const char *plan, int entry);
+
 /** HELPERS */
-/** Appends s2 onto s1, where s1 must have been dynamically allocated. */
+/** Append s2 onto s1, where s1 must have been dynamically allocated. */
 static char *append(char *s1, const char *s2);
-/** Recursively creates the given directory. */
+/** Return whether s1 ends with the string s2. */
+static bool ends_with(const char *s1, const char *s2);
+/** Recursively create the given directory. */
 static int mkdir_recursive(const char *dirpath);
 /**
  * Parse an integer from the given string (base 10).  If the given string does
@@ -64,7 +96,7 @@ static int mkdir_recursive(const char *dirpath);
  * return value for an invalid input is undefined and should not be relied
  * upon.
  */
-static int parseint(const char *str);
+static int parse_int(const char *str);
 /**
  * Return the path to the plan directory, ensuring it exists (exiting if this
  * is impossible).  The returned string should be freed when it is no longer
@@ -86,18 +118,18 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-	if (argc < 1) 
+	if (argc < 1)
 		usage();
 	else
 		progname = basename(argv[0]);
 
-	if (argc == 1) 
+	if (argc == 1)
 		summary(NULL);
-	else if (*argv[1] == '-' && strlen(argv[1]) == 2) 
+	else if (*argv[1] == '-' && strlen(argv[1]) == 2)
 		subcommand(argv[1][1], argc - 2, argv + 2);
-	else if (argc == 2) 
+	else if (argc == 2)
 		summary(argv[1]);
-	else 
+	else
 		usage();
 
 	return 0;
@@ -137,7 +169,7 @@ subcommand(char command, int argc, char **argv)
 		if (argc == 2) {
 			int num;
 			errno = 0;
-			num = parseint(argv[0]);
+			num = parse_int(argv[0]);
 			if (errno != 0)
 				err(1, "bad argument to '-s'");
 			show(argv[1], num);
@@ -149,10 +181,10 @@ subcommand(char command, int argc, char **argv)
 		if (argc == 2) {
 			int entry;
 			errno = 0;
-			entry = parseint(argv[0]);
+			entry = parse_int(argv[0]);
 			if (errno != 0)
 				err(1, "bad argument to '-t'");
-			show(argv[1], entry);
+			set(argv[1], entry);
 		} else {
 			usage();
 		}
@@ -214,6 +246,7 @@ static void
 delete(const char *plan)
 {
 	char *path = append(append(plandir(), "/"), plan);
+
 	if (unlink(path) < 0) {
 		if (errno == ENOENT)
 			errx(1, "plan '%s' does not exist", plan);
@@ -223,35 +256,177 @@ delete(const char *plan)
 	path = append(path, ".status");
 	if (unlink(path) < 0)
 		err(1, "could not remove plan status file '%s'", path);
+
+	free(path);
 }
 
 static void
 next(const char *plan)
 {
+	int entries = plan_count_entries(plan);
+	int entry = plan_get_entry(plan);
+	plan_set_entry(plan, clamp(1, entry + 1, entries + 1));
 }
 
 static void
 previous(const char *plan)
 {
+	int entries = plan_count_entries(plan);
+	int entry = plan_get_entry(plan);
+	plan_set_entry(plan, clamp(1, entry - 1, entries + 1));
 }
 
 static void
 set(const char *plan, int entry)
 {
+	int entries = plan_count_entries(plan);
+	plan_set_entry(plan, clamp(1, entry, entries + 1));
 }
 
 static void
 show(const char *plan, int num)
 {
+	printf("\n");
 }
 
 static void
 summary(const char *plan)
 {
-	printf("A summary\n");
+	if (plan) {
+		int entries = plan_count_entries(plan);
+		int entry = plan_get_entry(plan);
+
+		if (entry > entries) {
+			printf("%s (end of plan)\n", plan);
+		} else {
+			printf("%s (%d/%d): ", plan, plan_get_entry(plan),
+			    plan_count_entries(plan));
+			show(plan, 1);
+		}
+	} else {
+		char *path = plandir();
+		DIR *dir;
+		struct dirent *file;
+
+		if (!(dir = opendir(path)))
+			err(1, "could not open plan directory (%s)",
+			    plandir());
+
+		errno = 0;
+		while ((file = readdir(dir)))
+			if (file->d_name[0] != '.' &&
+			    !ends_with(file->d_name, ".status"))
+				summary(file->d_name);
+
+		if (errno != 0)
+			err(1, "could not read from plan directory (%s)",
+			    plandir());
+		closedir(dir);
+	}
 }
 
-static char *append(char *s1, const char *s2)
+static int
+plan_count_entries(const char *plan)
+{
+	char *path = append(append(plandir(), "/"), plan);
+	FILE *planfile;
+	int entries = 0;
+	int c;
+
+	if (!(planfile = fopen(path, "r"))) {
+		if (errno == ENOENT)
+			errx(1, "plan '%s' does not exist", plan);
+		else
+			err(1, "could not open plan file '%s' for reading",
+			    path);
+	}
+	if ((c = getc(planfile)) == EOF)
+		return 0;
+	if (!isblank(c))
+		entries++;
+	while (!plan_file_next_entry(planfile))
+		entries++;
+	fclose(planfile);
+
+	return entries;
+}
+
+static int
+plan_file_next_entry(FILE *planfile)
+{
+	int c;
+
+	/* Skip lines until we reach one that doesn't start with a space. */
+	do {
+		while ((c = getc(planfile)) != '\n')
+			if (c == EOF)
+				return 1;
+	} while (isblank(c = getc(planfile)));
+	ungetc(c, planfile);
+
+	return 0;
+}
+
+static int
+plan_get_entry(const char *plan)
+{
+	char *path = append(append(append(plandir(), "/"), plan), ".status");
+	FILE *status;
+	int entry;
+	char buf[32];
+	size_t got;
+
+	if (!(status = fopen(path, "r"))) {
+		if (errno == ENOENT)
+			errx(1, "status for plan '%s' not found", plan);
+		else
+			err(1, "could not access plan status file '%s'", path);
+	}
+
+	/* Make sure we have enough space left for the 0 byte at the end. */
+	got = fread(buf, 1, sizeof buf - 1, status);
+	if (ferror(status))
+		err(1, "could not read from plan status file '%s'", path);
+	if (!feof(status))
+		errx(1, "malformed status file '%s' (too long)", path);
+	fclose(status);
+	buf[got] = '\0';
+
+	errno = 0;
+	entry = parse_int(buf);
+	if (errno != 0)
+		err(1, "malformed status file '%s' (expected number)", path);
+
+	free(path);
+	return entry;
+}
+
+static void
+plan_set_entry(const char *plan, int entry)
+{
+	char *path = append(append(append(plandir(), "/"), plan), ".status");
+	FILE *status;
+
+	if (!(status = fopen(path, "w")))
+		err(1, "could not open plan status file '%s' for writing",
+		    path);
+	if (fprintf(status, "%d", entry) < 0)
+		err(1, "could not write to plan status file '%s'", path);
+
+	fclose(status);
+	free(path);
+}
+
+static bool
+ends_with(const char *s1, const char *s2)
+{
+	size_t z1 = strlen(s1);
+	size_t z2 = strlen(s2);
+	return !strcmp(s1 + z1 - z2, s2);
+}
+
+static char *
+append(char *s1, const char *s2)
 {
 	size_t z1 = strlen(s1);
 	size_t z2 = strlen(s2);
@@ -263,7 +438,8 @@ static char *append(char *s1, const char *s2)
 	return s1;
 }
 
-static int mkdir_recursive(const char *dirpath)
+static int
+mkdir_recursive(const char *dirpath)
 {
 	char *path = strdup(dirpath);
 	char *tmp = path + 1; /* pointer to the next '/' in the path */
@@ -286,7 +462,7 @@ static int mkdir_recursive(const char *dirpath)
 		retval = -1;
 
 EXIT:
-	/* It's not good for a function to set errno to 0. */
+	/* It's not good for a utility function to set errno to 0. */
 	if (errno == 0)
 		errno = errno_old;
 	free(tmp);
@@ -294,7 +470,7 @@ EXIT:
 }
 
 static int
-parseint(const char *str)
+parse_int(const char *str)
 {
 	char *end;
 	long val = strtol(str, &end, 10);
@@ -310,7 +486,8 @@ parseint(const char *str)
 	}
 }
 
-static char *plandir(void)
+static char *
+plandir(void)
 {
 	char *dirpath;
 
@@ -334,7 +511,8 @@ static char *plandir(void)
 	return dirpath;
 }
 
-static void *xrealloc(void *ptr, size_t size)
+static void *
+xrealloc(void *ptr, size_t size)
 {
 	void *res = realloc(ptr, size);
 	if (!res)
