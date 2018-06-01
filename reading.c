@@ -65,11 +65,18 @@ static void summary(const char *plan);
 static int plan_count_entries(const char *plan);
 /**
  * Given an already-opened plan file, consume characters until the beginning of
- * the next entry.  If there are no more entries, a non-zero value is returned;
- * otherwise, zero is returned.  The next character to be read after a call to
- * this function will be the first character in the entry's title.
+ * the next entry.  If there are no more entries after this one, a non-zero
+ * value is returned; otherwise, zero is returned.  The next character to be
+ * read after a call to this function will be the first character in the
+ * entry's title.
  */
 static int plan_file_next_entry(FILE *planfile);
+/**
+ * Like plan_file_next_entry, but print the entry title and description as they
+ * are encountered instead of just skipping them.  It is an error to call this
+ * function if the next character in the file is not the start of an entry.
+ */
+static int plan_file_print_entry(FILE *planfile);
 /**
  * Return the current entry of the given plan.  The program will abort if this
  * cannot be done (e.g. if the plan does not exist).
@@ -286,7 +293,40 @@ set(const char *plan, int entry)
 static void
 show(const char *plan, int num)
 {
-	printf("\n");
+	int entry;
+	char *path = append(append(plandir(), "/"), plan);
+	FILE *planfile;
+	int c;
+
+	if (!(planfile = fopen(path, "r"))) {
+		if (errno == ENOENT)
+			errx(1, "plan '%s' does not exist", plan);
+		else
+			err(1, "could not open plan file '%s' for reading",
+			    path);
+	}
+	entry = plan_get_entry(plan);
+
+	if (!isblank(c = getc(planfile))) {
+		/*
+		 * If we're starting on an entry, then calling
+		 * plan_file_next_entry will skip over it and go to the second
+		 * entry.  If we're not starting on an entry, then calling
+		 * plan_file_next_entry will skip to the beginning of the
+		 * *first* entry.  To make sure we do the same thing in both
+		 * cases, we ensure that 'entry' holds the number of skip calls
+		 * we must make.
+		 */
+		entry--;
+		ungetc(c, planfile);
+	}
+	for (int i = 0; i < entry; i++)
+		plan_file_next_entry(planfile);
+	for (int i = 0; i < num; i++)
+		if (plan_file_print_entry(planfile))
+			break;
+
+	fclose(planfile);
 }
 
 static void
@@ -362,6 +402,47 @@ plan_file_next_entry(FILE *planfile)
 			if (c == EOF)
 				return 1;
 	} while (isblank(c = getc(planfile)));
+	if (c == EOF)
+		return 1;
+	ungetc(c, planfile);
+
+	return 0;
+}
+
+static int
+plan_file_print_entry(FILE *planfile)
+{
+	int c;
+
+	/* Print title line first. */
+	while ((c = getc(planfile)) != '\n')
+		if (c == EOF) {
+			putchar('\n');
+			return 1;
+		} else {
+			putchar(c);
+		}
+	putchar('\n');
+
+	/* Process description lines separately so they can be indented. */
+	while (isblank(c = getc(planfile))) {
+		/* Replace all leading whitespace with a single tab. */
+		while (isblank(c = getc(planfile)))
+			;
+		ungetc(c, planfile);
+		putchar('\t');
+		while ((c = getc(planfile)) != '\n')
+			if (c == EOF) {
+				putchar('\n');
+				return 1;
+			} else {
+				putchar(c);
+			}
+		putchar('\n');
+	}
+	if (c == EOF)
+		return 1;
+	/* c now contains the first character in the next entry. */
 	ungetc(c, planfile);
 
 	return 0;
