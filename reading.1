@@ -12,9 +12,20 @@
 .Op Fl t Ar entry
 .Op Ar plan
 .Sh DESCRIPTION
-The arguments are mutually exclusive, functioning more like subcommands in this
-respect than traditional Unix-style arguments.
-They are as follows:
+.Nm
+is a simple utility for managing reading plans.
+A reading plan consists of a series of entries, each of which may optionally
+include a description.
+.Nm
+associates with each reading plan the number of the current entry, providing a
+simple mechanism for managing and viewing multiple plans simultaneously (more
+convenient than the equivalent task of keeping track of the files manually).
+.Pp
+When run without any arguments,
+.Nm
+outputs a summary of each plan (the number and contents of the current entry).
+Optionally, a plan name can be provided to restrict the summary to that plan.
+Other operations are accessed via the following mutually exclusive arguments:
 .Bl -tag -width Ds
 .It Fl a Ar file
 Add the given file as a new reading plan.
@@ -31,9 +42,91 @@ Revert the given plan to the previous entry.
 .It Fl s Ar num
 Show the next
 .Ar num
-entries of the given plan (or of all plans, if none is specified).
+entries of the given plan.
 .It Fl t Ar entry
 Set the current entry of the given plan.
 .It Fl V
 Show version information and exit.
 .El
+.Ss PLAN FORMAT
+The simplest reading plan understood by
+.Nm
+is a plain-text file with one entry per line, like the following:
+.Bd -literal
+Entry 1
+Entry 2
+Entry 3
+.Ed
+.Pp
+It is important that no entry begin with a blank (either a space or a tab),
+because lines beginning with a blank are interpreted as description lines for
+the entry above them.
+For example, the following plan supplements the above with a description for
+each entry, which is printed as part of the entry summary.
+.Bd -literal
+Entry 1
+	The first entry.
+Entry 2
+	The second entry.
+Entry 3
+	The third entry.
+.Ed
+.Pp
+The amount and type of leading whitespace on a description line is not
+important; when printing, all leading whitespace will be displayed as a single
+tab character.
+Since description lines always apply to the last entry that came before them,
+plans may start with description lines to include
+.Dq invisible
+metadata:
+.Bd -literal
+	This plan is an example.
+	The description lines at the top will not be shown
+	to the user as part of any entry.
+Entry 1
+	The first entry.
+Entry 2
+	The second entry.
+Entry 3
+	The third entry.
+.Ed
+.Pp
+As a final note of caution, please keep in mind that blank lines and lines
+consisting of only whitespace are
+.Em not
+treated specially: a blank line will be processed as an entry with no text, and
+a line of blanks will be processed as a description line with no text.
+.Ss PLAN STORAGE
+.Nm
+stores plan data in one of the following three locations (in decreasing order
+of precedence):
+.Pp
+.Bl -enum
+.It
+.Li $ Ns Ev READING_PLAN_DIR
+.It
+.Li $ Ns Ev XDG_DATA_HOME Ns /reading
+.It
+.Li $ Ns Ev HOME Ns /.local/share/reading
+.El
+.Pp
+A plan is stored as two files.
+The first file, whose name is the name of the plan, is simply the plan entries
+in the format described above
+.Sx ( PLAN FORMAT ) .
+The second file, whose name is the name of the plan with the file extension
+.Li .status ,
+contains the current entry number of the plan (and nothing more, not even a
+trailing newline).
+This current entry number starts at one and ends at one more than the number of
+entries in the plan; this maximum value signifies that the plan has been
+completed.
+.Sh ENVIRONMENT
+The following environment variable is recognized:
+.Bl -tag -width Ds
+.It Ev READING_PLAN_DIR
+The location to use for the plan directory, in preference to the default
+location.
+.El
+.Sh AUTHORS
+.An Ian Johnson Aq Mt ianprime0509@gmail.com
